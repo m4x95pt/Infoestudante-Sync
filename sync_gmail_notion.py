@@ -201,13 +201,16 @@ def find_domain_by_name(disciplina_codigo):
 
     codigo_lower = disciplina_codigo.lower().strip()
 
-    # Mapa de abreviações → keywords para match no nome da cadeira
+    # Mapa de abreviações → keyword único do nome da cadeira no Notion
     ABREVIACOES = {
-        "pa":  ["produção audiovisual", "producao audiovisual"],
-        "pma": ["projeto", "audiovisual"],
-        "p2":  ["projeto 2"],
-        "cg":  ["computação gráfica", "computacao grafica"],
-        "fc":  ["fotografia", "composição"],
+        "pma": ["projeto 2 - audiovisual", "projeto 2"],
+        "pa":  ["produção audiovisual"],
+        "cg":  ["computação gráfica"],
+        "fc":  ["fotografia e composição"],
+        "ti":  ["tecnologias da internet"],
+        "p1":  ["projeto 1 - identidade", "projeto 1"],
+        "tmd": ["tipografia em meios digitais"],
+        "acm": ["arte e cultura moderna"],
     }
     keywords = ABREVIACOES.get(codigo_lower, [codigo_lower])
 
