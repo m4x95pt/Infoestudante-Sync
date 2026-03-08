@@ -16,6 +16,7 @@ NOTION_TOKEN       = os.environ["NOTION_TOKEN"]
 TOPICS_DB_ID  = "2a5c4bee31638103a42ee9e2fa528806"   # Topics (assignments)
 DOMAINS_DB_ID = "2a5c4bee316381cbadc0c231753c492d"   # Domains (cadeiras)
 GMAIL_LABEL   = "inforestudante"
+SLACK_WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL")
 
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -282,8 +283,23 @@ def create_assignment(disciplina_nome, trabalho_nome, data_limite, domain_id):
 
     resp = requests.post("https://api.notion.com/v1/pages", headers=NOTION_HEADERS, json=body)
     resp.raise_for_status()
+    page_url = resp.json().get("url", "https://notion.so")
     due_str = f" · Due: {data_limite}" if data_limite else ""
     print(f"  ✅ Assignment criado: {nome}{due_str}")
+    notify_slack(trabalho_nome, disciplina_nome, data_limite, page_url)
+
+
+# ─── Slack: enviar notificação ───────────────────────────────────────────────
+
+def notify_slack(trabalho, disciplina, data_limite, notion_url):
+    if not SLACK_WEBHOOK:
+        return
+    cadeira = disciplina if disciplina else "?"
+    data_str = f" · entrega *{data_limite}*" if data_limite else ""
+    texto = f":books: *Novo trabalho adicionado!*
+*{cadeira}* — {trabalho}{data_str}
+<{notion_url}|Ver no Notion>"
+    requests.post(SLACK_WEBHOOK, json={"text": texto})
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
