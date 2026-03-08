@@ -1,0 +1,64 @@
+name: Slack Notifications
+
+on:
+  schedule:
+    # Daily digest — 8h00 Lisboa (7h00 UTC)
+    - cron: '0 7 * * *'
+    # Alertas de deadline — 8h30 Lisboa (7h30 UTC), todos os dias
+    - cron: '30 7 * * *'
+    # Resumo semanal — Domingo às 20h00 Lisboa (19h00 UTC)
+    - cron: '0 19 * * 0'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Modo a correr (daily / deadline / weekly)'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+          - daily
+          - deadline
+          - weekly
+
+jobs:
+  daily:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'daily' || github.event.schedule == '0 7 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - run: python slack_notify.py daily
+        env:
+          NOTION_TOKEN:      ${{ secrets.NOTION_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  deadline:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'deadline' || github.event.schedule == '30 7 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - run: python slack_notify.py deadline
+        env:
+          NOTION_TOKEN:      ${{ secrets.NOTION_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  weekly:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'weekly' || github.event.schedule == '0 19 * * 0'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - run: python slack_notify.py weekly
+        env:
+          NOTION_TOKEN:      ${{ secrets.NOTION_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
