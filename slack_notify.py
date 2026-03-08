@@ -123,7 +123,7 @@ def daily_digest():
     # ── Tarefas de hoje ──────────────────────────────────────────────────────
     tarefas = notion_query(TASKS_DB_ID, filters={
         "and": [
-            {"property": "Due", "date": {"equals": hoje_str}},
+            {"property": "Due Date", "date": {"equals": hoje_str}},
             {"property": "Status", "status": {"does_not_equal": "Done"}},
         ]
     })
