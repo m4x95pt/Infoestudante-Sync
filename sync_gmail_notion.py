@@ -98,6 +98,12 @@ def get_emails():
             raw = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
             body = clean_body(raw)
 
+        # Ignorar emails que não sejam notificações de submissão de trabalhos
+        if "Notifica" not in subject or "Submiss" not in subject:
+            print(f"  ⏭️  Ignorado (não é notificação de submissão): {subject}")
+            mail.store(eid, "+FLAGS", "\\Seen")  # marcar como lido para não voltar a aparecer
+            continue
+
         print(f"\n  📧 Assunto decodificado: {subject}")
         print(f"  Corpo:\n{body[:500]}\n---")
 
