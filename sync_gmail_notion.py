@@ -252,8 +252,8 @@ def assignment_exists(nome):
 
 # ─── Notion: criar assignment no Study Scheduler ─────────────────────────────
 
-def create_assignment(disciplina_nome, trabalho_nome, data_limite, domain_url):
-    nome = f"{disciplina_nome}: {trabalho_nome}" if disciplina_nome else trabalho_nome
+def create_assignment(disciplina_nome, trabalho_nome, data_limite, domain_id):
+    nome = trabalho_nome  # titulo limpo, sem prefixo de disciplina
 
     if assignment_exists(nome):
         print(f"  — Já existe: {nome}")
@@ -268,8 +268,8 @@ def create_assignment(disciplina_nome, trabalho_nome, data_limite, domain_url):
         }
     }
 
-    if domain_url:
-        body["properties"]["domain"] = {"relation": [{"url": domain_url}]}
+    if domain_id:
+        body["properties"]["domain"] = {"relation": [{"id": domain_id}]}
 
     if data_limite:
         body["properties"]["date"] = {"date": {"start": data_limite}}
@@ -300,10 +300,10 @@ if __name__ == "__main__":
                 print("  ⚠️  Não foi possível extrair o nome do trabalho")
                 continue
 
-            domain_url = None
+            domain_url, domain_id = None, None
             if data["disciplina"]:
-                domain_url, _ = find_domain_by_name(data["disciplina"])
+                domain_url, domain_id = find_domain_by_name(data["disciplina"])
 
-            create_assignment(data["disciplina"], data["trabalho"], data["data_limite"], domain_url)
+            create_assignment(data["disciplina"], data["trabalho"], data["data_limite"], domain_id)
 
         print("\n✅ Processamento concluído!")
