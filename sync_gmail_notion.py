@@ -296,10 +296,12 @@ def notify_slack(trabalho, disciplina, data_limite, notion_url):
         return
     cadeira = disciplina if disciplina else "?"
     data_str = f" · entrega *{data_limite}*" if data_limite else ""
-    texto = f":books: *Novo trabalho adicionado!*
-*{cadeira}* — {trabalho}{data_str}
-<{notion_url}|Ver no Notion>"
-    requests.post(SLACK_WEBHOOK, json={"text": texto})
+    linhas = [
+        ":books: *Novo trabalho adicionado!*",
+        f"*{cadeira}* — {trabalho}{data_str}",
+        f"<{notion_url}|Ver no Notion>",
+    ]
+    requests.post(SLACK_WEBHOOK, json={"text": "\n".join(linhas)})
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
