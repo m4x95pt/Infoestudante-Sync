@@ -1,7 +1,9 @@
 import os
 import imaplib
 import email
+import email.header
 import re
+import html
 from datetime import datetime
 import requests
 
@@ -10,9 +12,9 @@ GMAIL_USER         = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 NOTION_TOKEN       = os.environ["NOTION_TOKEN"]
 
-# Study Scheduler — Topics (assignments) e Domains (cadeiras)
-TOPICS_DS_ID  = "2a5c4bee-3163-8114-906a-000b84fdbcd0"
-DOMAINS_DS_ID = "2a5c4bee-3163-8119-bff1-000bac57ab22"
+# IDs correctos das databases (page IDs, não collection IDs)
+TOPICS_DB_ID  = "2a5c4bee31638103a42ee9e2fa528806"   # Topics (assignments)
+DOMAINS_DB_ID = "2a5c4bee316381cbadc0c231753c492d"   # Domains (cadeiras)
 GMAIL_LABEL   = "inforestudante"
 
 NOTION_HEADERS = {
@@ -23,6 +25,32 @@ NOTION_HEADERS = {
 
 
 # ─── Gmail: buscar emails não lidos com a label ───────────────────────────────
+
+def decode_subject(subject_raw):
+    """Decodifica assunto em RFC 2047 (=?UTF-8?Q?...?=)."""
+    parts = email.header.decode_header(subject_raw)
+    decoded = []
+    for part, enc in parts:
+        if isinstance(part, bytes):
+            decoded.append(part.decode(enc or "utf-8", errors="ignore"))
+        else:
+            decoded.append(part)
+    return " ".join(decoded)
+
+
+def clean_body(body):
+    """Remove HTML tags e normaliza espaços."""
+    # Converter <br/> e <br> em newlines
+    body = re.sub(r"<br\s*/?>", "\n", body, flags=re.IGNORECASE)
+    # Remover todas as tags HTML
+    body = re.sub(r"<[^>]+>", "", body)
+    # Decode HTML entities (&amp; &lt; etc.)
+    body = html.unescape(body)
+    # Normalizar espaços
+    body = re.sub(r"[ \t]+", " ", body)
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    return body.strip()
+
 
 def get_emails():
     print("📬 A ligar ao Gmail...")
@@ -51,22 +79,29 @@ def get_emails():
             continue
         msg = email.message_from_bytes(msg_data[0][1])
 
+        # Extrair e decodificar assunto
+        subject_raw = msg.get("Subject", "")
+        subject = decode_subject(subject_raw)
+
+        # Extrair corpo — preferir text/plain, fallback para text/html
         body = ""
         if msg.is_multipart():
             for part in msg.walk():
-                if part.get_content_type() == "text/plain":
+                ct = part.get_content_type()
+                if ct == "text/plain":
                     body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
                     break
+                elif ct == "text/html" and not body:
+                    raw_html = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    body = clean_body(raw_html)
         else:
-            body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+            raw = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+            body = clean_body(raw)
 
-        emails.append({
-            "id": eid,
-            "subject": msg.get("Subject", ""),
-            "body": body,
-        })
+        print(f"\n  📧 Assunto decodificado: {subject}")
+        print(f"  Corpo:\n{body[:500]}\n---")
 
-        # Marcar como lido para não processar de novo
+        emails.append({"id": eid, "subject": subject, "body": body})
         mail.store(eid, "+FLAGS", "\\Seen")
 
     mail.logout()
@@ -89,31 +124,37 @@ def parse_email(subject, body):
     text = body.replace("\r\n", "\n").replace("\r", "\n")
     result = {"disciplina": None, "trabalho": None, "data_inicio": None, "data_limite": None}
 
-    # Disciplina
+    # Disciplina — padrões comuns nos emails do nonio
     for pattern in [
-        r"(?:disciplina|unidade curricular|UC)[:\s]+([^\n]+)",
-        r"(?:course|cadeira)[:\s]+([^\n]+)",
+        r"(?:disciplina|unidade curricular|UC|cadeira)[:\s]+([^\n]+)",
+        r"(?:course)[:\s]+([^\n]+)",
     ]:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
             result["disciplina"] = m.group(1).strip()
             break
 
-    # Nome do trabalho
+    # Nome do trabalho — linha antes das datas
     for pattern in [
-        r"(?:trabalho|submiss[aã]o|tarefa|avalia[cç][aã]o|assignment)[:\s]+([^\n]+)",
+        r"(?:trabalho|submiss[aã]o de trabalhos?|tarefa|avalia[cç][aã]o|entrega)[:\s«»\"\']*([^\n<]{3,80})",
     ]:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
-            result["trabalho"] = m.group(1).strip()
-            break
+            val = m.group(1).strip().rstrip(".")
+            # Ignorar se começar com "de trabalhos" (é o título da notificação)
+            if not re.match(r"^de trabalho", val, re.IGNORECASE):
+                result["trabalho"] = val
+                break
 
+    # Fallback: usar assunto do email limpo
     if not result["trabalho"]:
-        result["trabalho"] = subject.strip()
+        clean_subj = re.sub(r"\[NONIO\]|\[.*?\]", "", subject).strip()
+        result["trabalho"] = clean_subj if clean_subj else subject
 
     # Data limite
     for pattern in [
-        r"(?:data\s+limite|prazo|limite de entrega|data\s+fim|fim)[:\s]+(\d{2}[-/]\d{2}[-/]\d{4}(?:\s+\d{2}:\d{2})?)",
+        r"(?:data limite.*?é|prazo|limite de entrega|data\s+fim)[:\s]+(\d{2}[-/]\d{2}[-/]\d{4}(?:\s+\d{2}:\d{2})?)",
+        r"(\d{2}[-/]\d{2}[-/]\d{4}(?:\s+\d{2}:\d{2})?)[^\n]*(?:limite|prazo|fim|deadline)",
     ]:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
@@ -122,19 +163,20 @@ def parse_email(subject, body):
 
     # Data início
     for pattern in [
-        r"(?:data\s+in[ií]cio|in[ií]cio|a partir de)[:\s]+(\d{2}[-/]\d{2}[-/]\d{4}(?:\s+\d{2}:\d{2})?)",
+        r"(?:a partir de|data\s+in[ií]cio|in[ií]cio)[:\s]+(\d{2}[-/]\d{2}[-/]\d{4}(?:\s+\d{2}:\d{2})?)",
+        r"submeter.*?a partir de\s+(\d{2}[-/]\d{2}[-/]\d{4}(?:\s+\d{2}:\d{2})?)",
     ]:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
             result["data_inicio"] = parse_date(m.group(1))
             break
 
-    # Se não encontrou datas pelos labels, tenta encontrar todas as datas no texto
+    # Fallback: apanhar todas as datas no texto
     if not result["data_limite"]:
         dates = re.findall(r"\d{2}[-/]\d{2}[-/]\d{4}(?:\s+\d{2}:\d{2})?", text)
         if dates:
             result["data_limite"] = parse_date(dates[-1])
-        if len(dates) > 1:
+        if len(dates) > 1 and not result["data_inicio"]:
             result["data_inicio"] = parse_date(dates[0])
 
     return result
@@ -143,9 +185,8 @@ def parse_email(subject, body):
 # ─── Notion: encontrar cadeira pelo nome ─────────────────────────────────────
 
 def find_domain_by_name(disciplina_nome):
-    """Procura a cadeira no Domains pelo nome ou código."""
     resp = requests.post(
-        f"https://api.notion.com/v1/databases/{DOMAINS_DS_ID}/query",
+        f"https://api.notion.com/v1/databases/{DOMAINS_DB_ID}/query",
         headers=NOTION_HEADERS,
         json={"page_size": 50},
     )
@@ -156,22 +197,16 @@ def find_domain_by_name(disciplina_nome):
 
     for page in pages:
         props = page.get("properties", {})
-
-        # Verificar pelo nome
-        name_prop = props.get("Name", {})
-        name_items = name_prop.get("title", [])
+        name_items = props.get("Name", {}).get("title", [])
         name = name_items[0]["plain_text"].lower() if name_items else ""
-
-        # Verificar pelo course code
-        code_prop = props.get("course code", {})
-        code_items = code_prop.get("rich_text", [])
+        code_items = props.get("course code", {}).get("rich_text", [])
         code = code_items[0]["plain_text"].lower() if code_items else ""
 
         if disciplina_lower in name or name in disciplina_lower or disciplina_lower == code:
             print(f"  ✓ Cadeira encontrada: {name_items[0]['plain_text'] if name_items else '?'}")
             return page["url"], page["id"]
 
-    print(f"  ⚠️  Cadeira não encontrada: {disciplina_nome}")
+    print(f"  ⚠️  Cadeira não encontrada: '{disciplina_nome}'")
     return None, None
 
 
@@ -179,14 +214,9 @@ def find_domain_by_name(disciplina_nome):
 
 def assignment_exists(nome):
     resp = requests.post(
-        f"https://api.notion.com/v1/databases/{TOPICS_DS_ID}/query",
+        f"https://api.notion.com/v1/databases/{TOPICS_DB_ID}/query",
         headers=NOTION_HEADERS,
-        json={
-            "filter": {
-                "property": "lecture/assignment",
-                "title": {"equals": nome}
-            }
-        }
+        json={"filter": {"property": "lecture/assignment", "title": {"equals": nome}}}
     )
     resp.raise_for_status()
     return len(resp.json().get("results", [])) > 0
@@ -202,7 +232,7 @@ def create_assignment(disciplina_nome, trabalho_nome, data_limite, domain_url):
         return
 
     body = {
-        "parent": {"database_id": TOPICS_DS_ID},
+        "parent": {"database_id": TOPICS_DB_ID},
         "properties": {
             "lecture/assignment": {"title": [{"text": {"content": nome}}]},
             "type":               {"select": {"name": "assignment"}},
@@ -210,21 +240,13 @@ def create_assignment(disciplina_nome, trabalho_nome, data_limite, domain_url):
         }
     }
 
-    # Ligar à cadeira (relação domain)
     if domain_url:
-        body["properties"]["domain"] = {
-            "relation": [{"url": domain_url}]
-        }
+        body["properties"]["domain"] = {"relation": [{"url": domain_url}]}
 
-    # Data limite
     if data_limite:
         body["properties"]["date"] = {"date": {"start": data_limite}}
 
-    resp = requests.post(
-        "https://api.notion.com/v1/pages",
-        headers=NOTION_HEADERS,
-        json=body,
-    )
+    resp = requests.post("https://api.notion.com/v1/pages", headers=NOTION_HEADERS, json=body)
     resp.raise_for_status()
     due_str = f" · Due: {data_limite}" if data_limite else ""
     print(f"  ✅ Assignment criado: {nome}{due_str}")
@@ -240,20 +262,19 @@ if __name__ == "__main__":
     else:
         print(f"\n📝 A processar {len(emails)} email(s)...")
         for e in emails:
-            print(f"\n  📧 Assunto: {e['subject']}")
             data = parse_email(e["subject"], e["body"])
-            print(f"     Disciplina:  {data['disciplina']}")
-            print(f"     Trabalho:    {data['trabalho']}")
-            print(f"     Data limite: {data['data_limite']}")
+            print(f"  Disciplina:  {data['disciplina']}")
+            print(f"  Trabalho:    {data['trabalho']}")
+            print(f"  Data início: {data['data_inicio']}")
+            print(f"  Data limite: {data['data_limite']}")
 
             if not data["trabalho"]:
                 print("  ⚠️  Não foi possível extrair o nome do trabalho")
                 continue
 
-            # Encontrar a cadeira no Notion
-            domain_url, domain_id = None, None
+            domain_url = None
             if data["disciplina"]:
-                domain_url, domain_id = find_domain_by_name(data["disciplina"])
+                domain_url, _ = find_domain_by_name(data["disciplina"])
 
             create_assignment(data["disciplina"], data["trabalho"], data["data_limite"], domain_url)
 
