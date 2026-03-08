@@ -121,6 +121,248 @@ def parse_date(date_str):
 
 
 def parse_email(subject, body):
+    """
+    Formato real dos emails do NONIO:
+    - Assunto: [NONIO] PMA - Notificação de Submissão de Trabalhos → disciplina = "PMA"
+    - Corpo: "submissão de trabalhos Meta 4 – As Cidades Invisíveis – Pré-produção."
+    - Corpo: "A data limite para entrega é 04-04-2026 22:00"
+    - Corpo: "Pode submeter a entrega a partir de 05-03-2026 14:00"
+    """
+    text = body.replace("\r\n", "\n").replace("\r", "\n")
+    result = {"disciplina": None, "trabalho": None, "data_inicio": None, "data_limite": None}
+
+    # ── Disciplina: extrair código entre [NONIO] e o primeiro traço ──────────
+    # "[NONIO] PMA - Notificação..." → "PMA"
+    m = re.search(r"\[NONIO\]\s+(.+?)\s*-\s", subject)
+    if m:
+        result["disciplina"] = m.group(1).strip()
+
+    # ── Nome do trabalho ──────────────────────────────────────────────────────
+    # Padrão 1 (aproximação de prazo): "submissão do trabalho X está prestes a terminar"
+    m = re.search(r"submiss[aã]o do trabalho\s+(.+?)\s+est[aá]\s+prestes", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        result["trabalho"] = m.group(1).strip()
+
+    # Padrão 2 (nova submissão): "submissão de trabalhos X.\nPode submeter"
+    if not result["trabalho"]:
+        m = re.search(r"submiss[aã]o de trabalhos?\s+(.+?)\.\s*\n", text, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            if len(val) > 3:
+                result["trabalho"] = val
+
+    # Padrão 3: qualquer texto após "trabalho" até ao ponto final ou newline
+    if not result["trabalho"]:
+        m = re.search(r"trabalhos?\s+([^\n.]{3,100})", text, re.IGNORECASE)
+        if m:
+            result["trabalho"] = m.group(1).strip()
+
+    # ── Data limite ───────────────────────────────────────────────────────────
+    # "A data limite para entrega é 04-04-2026 22:00"
+    m = re.search(r"data limite para entrega [eé]\s+(\d{2}[-/]\d{2}[-/]\d{4}(?:\s+\d{2}:\d{2})?)", text, re.IGNORECASE)
+    if m:
+        result["data_limite"] = parse_date(m.group(1))
+
+    if not result["data_limite"]:
+        m = re.search(r"(?:prazo|limite)[^\d]*(\d{2}[-/]\d{2}[-/]\d{4}(?:\s+\d{2}:\d{2})?)", text, re.IGNORECASE)
+        if m:
+            result["data_limite"] = parse_date(m.group(1))
+
+    # ── Data início ───────────────────────────────────────────────────────────
+    # "Pode submeter a entrega a partir de 05-03-2026 14:00"
+    m = re.search(r"a partir de\s+(\d{2}[-/]\d{2}[-/]\d{4}(?:\s+\d{2}:\d{2})?)", text, re.IGNORECASE)
+    if m:
+        result["data_inicio"] = parse_date(m.group(1))
+
+    # ── Fallback: apanhar todas as datas no texto ─────────────────────────────
+    if not result["data_limite"]:
+        dates = re.findall(r"\d{2}[-/]\d{2}[-/]\d{4}(?:\s+\d{2}:\d{2})?", text)
+        if dates:
+            result["data_limite"] = parse_date(dates[-1])
+        if len(dates) > 1 and not result["data_inicio"]:
+            result["data_inicio"] = parse_date(dates[0])
+
+    return result
+
+
+# ─── Notion: encontrar cadeira pelo nome ─────────────────────────────────────
+
+def find_domain_by_name(disciplina_codigo):
+    """
+    Procura a cadeira no Domains pelo código curto do assunto (PMA, PA, CG, etc.)
+    """
+    resp = requests.post(
+        f"https://api.notion.com/v1/databases/{DOMAINS_DB_ID}/query",
+        headers=NOTION_HEADERS,
+        json={"page_size": 50},
+    )
+    resp.raise_for_status()
+    pages = resp.json().get("results", [])
+
+    codigo_lower = disciplina_codigo.lower().strip()
+
+    # Mapa de abreviações → keywords para match no nome da cadeira
+    ABREVIACOES = {
+        "pa":  ["produção audiovisual", "producao audiovisual"],
+        "pma": ["projeto", "audiovisual"],
+        "p2":  ["projeto 2"],
+        "cg":  ["computação gráfica", "computacao grafica"],
+        "fc":  ["fotografia", "composição"],
+    }
+    keywords = ABREVIACOES.get(codigo_lower, [codigo_lower])
+
+    for page in pages:
+        props = page.get("properties", {})
+        name_items = props.get("Name", {}).get("title", [])
+        name = name_items[0]["plain_text"].lower() if name_items else ""
+        code_items = props.get("course code", {}).get("rich_text", [])
+        code = code_items[0]["plain_text"].lower() if code_items else ""
+
+        # Match directo pelo course code
+        if codigo_lower == code:
+            print(f"  ✓ Cadeira encontrada (código): {name_items[0]['plain_text'] if name_items else '?'}")
+            return page["url"], page["id"]
+
+        # Match pelo nome
+        for kw in keywords:
+            if kw in name:
+                print(f"  ✓ Cadeira encontrada (nome): {name_items[0]['plain_text'] if name_items else '?'}")
+                return page["url"], page["id"]
+
+    # Se não encontrou, mostrar cadeiras disponíveis para debug
+    nomes = [p["properties"]["Name"]["title"][0]["plain_text"] for p in pages if p["properties"]["Name"]["title"]]
+    print(f"  ⚠️  Cadeira não encontrada para '{disciplina_codigo}'. Disponíveis: {nomes}")
+    return None, None
+
+
+# ─── Notion: verificar se assignment já existe ────────────────────────────────
+
+def assignment_exists(nome):
+    resp = requests.post(
+        f"https://api.notion.com/v1/databases/{TOPICS_DB_ID}/query",
+        headers=NOTION_HEADERS,
+        json={"filter": {"property": "lecture/assignment", "title": {"equals": nome}}}
+    )
+    resp.raise_for_status()
+    return len(resp.json().get("results", [])) > 0
+
+
+# ─── Notion: criar assignment no Study Scheduler ─────────────────────────────
+
+def create_assignment(disciplina_nome, trabalho_nome, data_limite, domain_url):
+    nome = f"{disciplina_nome}: {trabalho_nome}" if disciplina_nome else trabalho_nome
+
+    if assignment_exists(nome):
+        print(f"  — Já existe: {nome}")
+        return
+
+    body = {
+        "parent": {"database_id": TOPICS_DB_ID},
+        "properties": {
+            "lecture/assignment": {"title": [{"text": {"content": nome}}]},
+            "type":               {"select": {"name": "assignment"}},
+            "Status":             {"status": {"name": "not started"}},
+        }
+    }
+
+    if domain_url:
+        body["properties"]["domain"] = {"relation": [{"url": domain_url}]}
+
+    if data_limite:
+        body["properties"]["date"] = {"date": {"start": data_limite}}
+
+    resp = requests.post("https://api.notion.com/v1/pages", headers=NOTION_HEADERS, json=body)
+    resp.raise_for_status()
+    due_str = f" · Due: {data_limite}" if data_limite else ""
+    print(f"  ✅ Assignment criado: {nome}{due_str}")
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    emails = get_emails()
+
+    if not emails:
+        print("✅ Nada a processar.")
+    else:
+        print(f"\n📝 A processar {len(emails)} email(s)...")
+        for e in emails:
+            data = parse_email(e["subject"], e["body"])
+            print(f"  Disciplina:  {data['disciplina']}")
+            print(f"  Trabalho:    {data['trabalho']}")
+            print(f"  Data início: {data['data_inicio']}")
+            print(f"  Data limite: {data['data_limite']}")
+
+            if not data["trabalho"]:
+                print("  ⚠️  Não foi possível extrair o nome do trabalho")
+                continue
+
+            domain_url = None
+            if data["disciplina"]:
+                domain_url, _ = find_domain_by_name(data["disciplina"])
+
+            create_assignment(data["disciplina"], data["trabalho"], data["data_limite"], domain_url)
+
+        print("\n✅ Processamento concluído!")        return []
+
+    status, data = mail.search(None, "UNSEEN")
+    if status != "OK" or not data[0]:
+        print("  ✓ Sem emails novos")
+        mail.logout()
+        return []
+
+    email_ids = data[0].split()
+    print(f"  ✓ {len(email_ids)} email(s) novo(s)")
+
+    emails = []
+    for eid in email_ids:
+        status, msg_data = mail.fetch(eid, "(RFC822)")
+        if status != "OK":
+            continue
+        msg = email.message_from_bytes(msg_data[0][1])
+
+        # Extrair e decodificar assunto
+        subject_raw = msg.get("Subject", "")
+        subject = decode_subject(subject_raw)
+
+        # Extrair corpo — preferir text/plain, fallback para text/html
+        body = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                ct = part.get_content_type()
+                if ct == "text/plain":
+                    body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    break
+                elif ct == "text/html" and not body:
+                    raw_html = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    body = clean_body(raw_html)
+        else:
+            raw = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+            body = clean_body(raw)
+
+        print(f"\n  📧 Assunto decodificado: {subject}")
+        print(f"  Corpo:\n{body[:500]}\n---")
+
+        emails.append({"id": eid, "subject": subject, "body": body})
+        mail.store(eid, "+FLAGS", "\\Seen")
+
+    mail.logout()
+    return emails
+
+
+# ─── Parser: extrair dados do email ──────────────────────────────────────────
+
+def parse_date(date_str):
+    date_str = date_str.strip()
+    for fmt in ["%d-%m-%Y %H:%M", "%d/%m/%Y %H:%M", "%d-%m-%Y", "%d/%m/%Y"]:
+        try:
+            return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def parse_email(subject, body):
     text = body.replace("\r\n", "\n").replace("\r", "\n")
     result = {"disciplina": None, "trabalho": None, "data_inicio": None, "data_limite": None}
 
