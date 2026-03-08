@@ -1,0 +1,30 @@
+name: Sync Gmail → Notion Tasks
+
+on:
+  schedule:
+    # Corre todos os dias às 08h00 hora de Lisboa
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Correr sync
+        env:
+          NOTION_TOKEN:        ${{ secrets.NOTION_TOKEN }}
+          GMAIL_USER:          ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD:  ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python sync_gmail_notion.py
