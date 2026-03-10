@@ -120,21 +120,30 @@ def daily_digest():
 
     linhas.append("")
 
-    # ── Tarefas de hoje ──────────────────────────────────────────────────────
+    # ── Tarefas pendentes ────────────────────────────────────────────────────
     tarefas = notion_query(TASKS_DB_ID, filters={
         "and": [
-            {"property": "Due Date", "date": {"equals": hoje_str}},
             {"property": "Status", "status": {"does_not_equal": "Done"}},
+            {"property": "Status", "status": {"does_not_equal": "Inbox"}},
         ]
     })
 
     if tarefas:
-        linhas.append("*✅ Tarefas para hoje:*")
+        linhas.append("*✅ Tarefas pendentes:*")
         for t in tarefas:
-            nome = prop_text(t, "Task name") or prop_text(t, "Name")
+            nome = prop_text(t, "Name")
             prioridade = prop_select(t, "Priority")
             p_emoji = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}.get(prioridade, "•")
-            linhas.append(f"  {p_emoji} {nome}")
+            due = prop_date(t, "Due Date")
+            if due and len(due) > 10:
+                # tem hora
+                dt = datetime.fromisoformat(due)
+                due_fmt = f" · _{dt.strftime('%d/%m %H:%M')}_"
+            elif due:
+                due_fmt = f" · _{datetime.strptime(due[:10], '%Y-%m-%d').strftime('%d/%m')}_"
+            else:
+                due_fmt = ""
+            linhas.append(f"  {p_emoji} {nome}{due_fmt}")
     else:
         linhas.append("*✅ Tarefas:* dia livre! 🎉")
 
@@ -153,6 +162,23 @@ def daily_digest():
         linhas.append(f"*🏃 Último treino:* {tipo} — {titulo}{dist_txt} _{data_fmt}_")
     else:
         linhas.append("*🏃 Strava:* sem treinos registados")
+
+    linhas.append("")
+
+    # ── Última despesa ────────────────────────────────────────────────────────
+    despesas = notion_query(EXPENSES_DB_ID, sorts=[{"property": "Date", "direction": "descending"}])
+    if despesas:
+        d = despesas[0]
+        source = prop_text(d, "Source")
+        amount = prop_number(d, "Amount")
+        tag = prop_select(d, "Tags")
+        data = prop_date(d, "Date")
+        data_fmt = datetime.strptime(data[:10], "%Y-%m-%d").strftime("%d/%m") if data else "?"
+        amount_fmt = f" · *{amount:.2f}€*" if amount is not None else ""
+        tag_fmt = f" · _{tag}_" if tag and tag != "—" else ""
+        linhas.append(f"*💸 Última despesa:* {source}{amount_fmt}{tag_fmt} _{data_fmt}_")
+    else:
+        linhas.append("*💸 Despesas:* nenhuma registada")
 
     slack("\n".join(linhas))
 
